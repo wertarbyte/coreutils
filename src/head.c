@@ -49,6 +49,11 @@
 /* Number of lines/chars/blocks to head. */
 #define DEFAULT_NUMBER 10
 
+/* Exit code to return if EOF is hit before reaching the preset limit */
+#define EXIT_LIMIT_UNDERRUN 4
+#define xstr(s) str(s)
+#define str(s) #s
+
 /* Useful only when eliding tail bytes or lines.
    If true, skip the is-regular-file test used to determine whether
    to use the lseek optimization.  Instead, use the more general (and
@@ -66,6 +71,11 @@ enum header_mode
 
 /* Have we ever read standard input?  */
 static bool have_read_stdin;
+
+/* did we reach EOF while reading? */
+static bool have_reached_eof;
+/* do we wish to indicate this via exit code? */
+static bool indicate_underrun;
 
 enum Copy_fd_status
   {
@@ -91,6 +101,7 @@ static struct option const long_options[] =
   {"quiet", no_argument, NULL, 'q'},
   {"silent", no_argument, NULL, 'q'},
   {"verbose", no_argument, NULL, 'v'},
+  {"indicate-eof", no_argument, NULL, 'e'},
   {GETOPT_HELP_OPTION_DECL},
   {GETOPT_VERSION_OPTION_DECL},
   {NULL, 0, NULL, 0}
@@ -99,7 +110,7 @@ static struct option const long_options[] =
 void
 usage (int status)
 {
-  if (status != EXIT_SUCCESS)
+  if (status != EXIT_SUCCESS || status != EXIT_LIMIT_UNDERRUN)
     fprintf (stderr, _("Try `%s --help' for more information.\n"),
              program_name);
   else
@@ -128,6 +139,8 @@ Mandatory arguments to long options are mandatory for short options too.\n\
       fputs (_("\
   -q, --quiet, --silent    never print headers giving file names\n\
   -v, --verbose            always print headers giving file names\n\
+      --indicate-underrun  change exit code to " xstr(EXIT_LIMIT_UNDERRUN) " if EOF is reached before\n\
+                             hitting the set limit\n\
 "), stdout);
       fputs (HELP_OPTION_DESCRIPTION, stdout);
       fputs (VERSION_OPTION_DESCRIPTION, stdout);
@@ -752,8 +765,10 @@ head_bytes (const char *filename, int fd, uintmax_t bytes_to_write)
           error (0, errno, _("error reading %s"), quote (filename));
           return false;
         }
-      if (bytes_read == 0)
+      if (bytes_read == 0) {
+        have_reached_eof = true;
         break;
+      }
       if (fwrite (buffer, 1, bytes_read, stdout) < bytes_read)
         error (EXIT_FAILURE, errno, _("write error"));
       bytes_to_write -= bytes_read;
@@ -776,8 +791,11 @@ head_lines (const char *filename, int fd, uintmax_t lines_to_write)
           error (0, errno, _("error reading %s"), quote (filename));
           return false;
         }
-      if (bytes_read == 0)
+      if (bytes_read == 0) {
+        /* FIXME we have to check whether we read sufficient lines already */
+        have_reached_eof = true;
         break;
+      }
       while (bytes_to_write < bytes_read)
         if (buffer[bytes_to_write++] == '\n' && --lines_to_write == 0)
           {
@@ -1025,6 +1043,10 @@ main (int argc, char **argv)
           header_mode = always;
           break;
 
+	case 'e':
+          indicate_underrun = true;
+          break;
+
         case_GETOPT_HELP_CHAR;
 
         case_GETOPT_VERSION_CHAR (PROGRAM_NAME, AUTHORS);
@@ -1060,5 +1082,5 @@ main (int argc, char **argv)
   if (have_read_stdin && close (STDIN_FILENO) < 0)
     error (EXIT_FAILURE, errno, "-");
 
-  exit (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+  exit (ok ? ( (have_reached_eof && indicate_underrun) ? EXIT_LIMIT_UNDERRUN : EXIT_SUCCESS ) : EXIT_FAILURE);
 }
